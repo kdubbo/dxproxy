@@ -17,6 +17,8 @@ type Metrics struct {
 	connectionsActive       atomic.Int64
 	connectionFailures      atomic.Uint64
 	connectionRejections    atomic.Uint64
+	faultDelays             atomic.Uint64
+	faultAborts             atomic.Uint64
 	tlsConnections          atomic.Uint64
 	plaintextConnections    atomic.Uint64
 	bytesToUpstream         atomic.Uint64
@@ -32,6 +34,8 @@ type Snapshot struct {
 	ConnectionsActive       int64
 	ConnectionFailures      uint64
 	ConnectionRejections    uint64
+	FaultDelays             uint64
+	FaultAborts             uint64
 	TLSConnections          uint64
 	PlaintextConnections    uint64
 	BytesToUpstream         uint64
@@ -61,6 +65,14 @@ func (m *Metrics) ConnectionFailed() {
 
 func (m *Metrics) ConnectionRejected() {
 	m.connectionRejections.Add(1)
+}
+
+func (m *Metrics) FaultDelayed() {
+	m.faultDelays.Add(1)
+}
+
+func (m *Metrics) FaultAborted() {
+	m.faultAborts.Add(1)
 }
 
 func (m *Metrics) TLSConnection() {
@@ -95,6 +107,8 @@ func (m *Metrics) Snapshot() Snapshot {
 		ConnectionsActive:       m.connectionsActive.Load(),
 		ConnectionFailures:      m.connectionFailures.Load(),
 		ConnectionRejections:    m.connectionRejections.Load(),
+		FaultDelays:             m.faultDelays.Load(),
+		FaultAborts:             m.faultAborts.Load(),
 		TLSConnections:          m.tlsConnections.Load(),
 		PlaintextConnections:    m.plaintextConnections.Load(),
 		BytesToUpstream:         m.bytesToUpstream.Load(),
@@ -118,6 +132,8 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 		{"dxplane_connections_active", "Current active inbound connections.", "gauge", snapshot.ConnectionsActive},
 		{"dxplane_connection_failures_total", "Total inbound connection processing failures.", "counter", snapshot.ConnectionFailures},
 		{"dxplane_connection_rejections_total", "Total connections rejected by the concurrency limit.", "counter", snapshot.ConnectionRejections},
+		{"dxplane_fault_delays_total", "Total inbound connections delayed by fault injection.", "counter", snapshot.FaultDelays},
+		{"dxplane_fault_aborts_total", "Total inbound connections aborted by fault injection.", "counter", snapshot.FaultAborts},
 		{"dxplane_tls_connections_total", "Total accepted TLS connections.", "counter", snapshot.TLSConnections},
 		{"dxplane_plaintext_connections_total", "Total accepted plaintext connections.", "counter", snapshot.PlaintextConnections},
 		{"dxplane_bytes_to_upstream_total", "Bytes proxied from the caller to the local application.", "counter", snapshot.BytesToUpstream},

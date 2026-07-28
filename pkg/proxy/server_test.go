@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,6 +133,63 @@ func TestServerDisableDoesNotRequireBootstrap(t *testing.T) {
 	_ = response.Body.Close()
 }
 
+func TestServerAppliesInboundFaultBeforeUpstream(t *testing.T) {
+	material := writeCertificateMaterial(t, t.TempDir(), "one")
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, "unexpected\n")
+	}))
+	defer upstream.Close()
+
+	runtimePath := filepath.Join(t.TempDir(), "runtime.json")
+	runtime := `{
+		"version":"dubbo.apache.org/proxyless-grpc/v1",
+		"services":[{
+			"host":"local.default.svc",
+			"ports":[{
+				"port":80,
+				"mtlsMode":"PERMISSIVE",
+				"fault":{
+					"delay":{"fixedDelay":"20ms","percentage":100},
+					"abort":{"httpStatus":503,"percentage":100}
+				}
+			}]
+		}]
+	}`
+	if err := os.WriteFile(runtimePath, []byte(runtime), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server, address, stop := startTestServer(t, Config{
+		UpstreamAddress:       upstream.Listener.Addr().String(),
+		BootstrapPath:         material.bootstrap,
+		RuntimeConfigPath:     runtimePath,
+		PolicyPort:            80,
+		DefaultMode:           string(policy.ModeStrict),
+		HandshakeTimeout:      time.Second,
+		ConnectTimeout:        time.Second,
+		ConfigRefreshInterval: time.Second,
+	}, material)
+	defer stop()
+
+	started := time.Now()
+	_, err := (&http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true}}).Get("http://" + address + "/")
+	if err == nil {
+		t.Fatal("fault-injected request succeeded")
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond {
+		t.Fatalf("fault delay elapsed = %v, want at least 20ms", elapsed)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("upstream requests = %d, want 0", requests.Load())
+	}
+	snapshot := server.metrics.Snapshot()
+	if snapshot.FaultDelays != 1 || snapshot.FaultAborts != 1 {
+		t.Fatalf("fault metrics = delays:%d aborts:%d, want 1/1", snapshot.FaultDelays, snapshot.FaultAborts)
+	}
+}
+
 func TestCertificateReloadRetainsLastValidConfiguration(t *testing.T) {
 	directory := t.TempDir()
 	first := writeCertificateMaterial(t, directory, "one")
@@ -196,7 +254,6 @@ func startTestServer(t *testing.T, config Config, _ certificateMaterial) (*Serve
 	}
 	config.ListenAddress = listener.Addr().String()
 	config.AdminAddress = ""
-	config.RuntimeConfigPath = ""
 	config.MaxConnections = 100
 	server, err := NewServer(config, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

@@ -68,21 +68,50 @@ type runtimeService struct {
 }
 
 type runtimePort struct {
-	Port     int    `json:"port"`
-	MTLSMode string `json:"mtlsMode"`
+	Port     int               `json:"port"`
+	MTLSMode string            `json:"mtlsMode"`
+	Fault    *runtimePortFault `json:"fault"`
 }
 
-func modeFromRuntimeConfig(data []byte, policyPort int) (Mode, error) {
+type runtimePortFault struct {
+	Delay *runtimeFaultDelay `json:"delay"`
+	Abort *runtimeFaultAbort `json:"abort"`
+}
+
+type runtimeFaultDelay struct {
+	FixedDelay string `json:"fixedDelay"`
+	Percentage uint32 `json:"percentage"`
+}
+
+type runtimeFaultAbort struct {
+	HTTPStatus uint32 `json:"httpStatus"`
+	Percentage uint32 `json:"percentage"`
+}
+
+type Fault struct {
+	Delay           time.Duration
+	DelayPercentage uint32
+	AbortStatus     uint32
+	AbortPercentage uint32
+}
+
+type State struct {
+	Mode  Mode
+	Fault Fault
+}
+
+func stateFromRuntimeConfig(data []byte, policyPort int) (State, error) {
 	var cfg runtimeConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return "", fmt.Errorf("parse runtime config: %w", err)
+		return State{}, fmt.Errorf("parse runtime config: %w", err)
 	}
 	if cfg.Version != "" && cfg.Version != RuntimeConfigVersion {
-		return "", fmt.Errorf("unsupported runtime config version %q", cfg.Version)
+		return State{}, fmt.Errorf("unsupported runtime config version %q", cfg.Version)
 	}
 
 	services := workloadServices(cfg)
 	best := Mode("")
+	var selectedFault *Fault
 	for _, service := range services {
 		for _, port := range service.Ports {
 			if policyPort != 0 && port.Port != policyPort {
@@ -93,20 +122,69 @@ func modeFromRuntimeConfig(data []byte, policyPort int) (Mode, error) {
 				if strings.TrimSpace(port.MTLSMode) == "" {
 					continue
 				}
-				return "", fmt.Errorf("service %q port %d: %w", service.Host, port.Port, err)
+				return State{}, fmt.Errorf("service %q port %d: %w", service.Host, port.Port, err)
 			}
 			if modePriority(mode) > modePriority(best) {
 				best = mode
+			}
+			fault, err := parseRuntimeFault(port.Fault)
+			if err != nil {
+				return State{}, fmt.Errorf("service %q port %d: %w", service.Host, port.Port, err)
+			}
+			if fault != (Fault{}) {
+				if selectedFault != nil && *selectedFault != fault {
+					return State{}, fmt.Errorf("conflicting inbound fault policies for workload service port %d", port.Port)
+				}
+				copy := fault
+				selectedFault = &copy
 			}
 		}
 	}
 	if best == "" {
 		if policyPort != 0 {
-			return "", fmt.Errorf("no inbound mTLS policy found for workload service port %d", policyPort)
+			return State{}, fmt.Errorf("no inbound mTLS policy found for workload service port %d", policyPort)
 		}
-		return "", fmt.Errorf("no inbound mTLS policy found for workload services")
+		return State{}, fmt.Errorf("no inbound mTLS policy found for workload services")
 	}
-	return best, nil
+	state := State{Mode: best}
+	if selectedFault != nil {
+		state.Fault = *selectedFault
+	}
+	return state, nil
+}
+
+func modeFromRuntimeConfig(data []byte, policyPort int) (Mode, error) {
+	state, err := stateFromRuntimeConfig(data, policyPort)
+	return state.Mode, err
+}
+
+func parseRuntimeFault(raw *runtimePortFault) (Fault, error) {
+	if raw == nil {
+		return Fault{}, nil
+	}
+	fault := Fault{}
+	if raw.Delay != nil {
+		delay, err := time.ParseDuration(raw.Delay.FixedDelay)
+		if err != nil || delay <= 0 {
+			return Fault{}, fmt.Errorf("fault.delay.fixedDelay must be a positive duration")
+		}
+		if raw.Delay.Percentage > 100 {
+			return Fault{}, fmt.Errorf("fault.delay.percentage must be in range [0, 100]")
+		}
+		fault.Delay = delay
+		fault.DelayPercentage = raw.Delay.Percentage
+	}
+	if raw.Abort != nil {
+		if raw.Abort.HTTPStatus < 400 || raw.Abort.HTTPStatus > 599 {
+			return Fault{}, fmt.Errorf("fault.abort.httpStatus must be in range [400, 599]")
+		}
+		if raw.Abort.Percentage > 100 {
+			return Fault{}, fmt.Errorf("fault.abort.percentage must be in range [0, 100]")
+		}
+		fault.AbortStatus = raw.Abort.HTTPStatus
+		fault.AbortPercentage = raw.Abort.Percentage
+	}
+	return fault, nil
 }
 
 func workloadServices(cfg runtimeConfig) []runtimeService {
@@ -153,7 +231,7 @@ type Source struct {
 
 func NewSource(path string, policyPort int, fallback Mode, logger *slog.Logger, metrics *telemetry.Metrics) *Source {
 	source := &Source{path: path, policyPort: policyPort, logger: logger, metrics: metrics}
-	source.current.Store(fallback)
+	source.current.Store(State{Mode: fallback})
 	if path == "" {
 		source.loaded.Store(true)
 	}
@@ -161,7 +239,11 @@ func NewSource(path string, policyPort int, fallback Mode, logger *slog.Logger, 
 }
 
 func (s *Source) Mode() Mode {
-	return s.current.Load().(Mode)
+	return s.current.Load().(State).Mode
+}
+
+func (s *Source) Fault() Fault {
+	return s.current.Load().(State).Fault
 }
 
 func (s *Source) Loaded() bool {
@@ -176,16 +258,16 @@ func (s *Source) Reload() error {
 	if err != nil {
 		return s.recordError(fmt.Errorf("read runtime config %s: %w", s.path, err))
 	}
-	mode, err := modeFromRuntimeConfig(data, s.policyPort)
+	state, err := stateFromRuntimeConfig(data, s.policyPort)
 	if err != nil {
 		return s.recordError(err)
 	}
 	previous := s.Mode()
-	s.current.Store(mode)
+	s.current.Store(state)
 	s.loaded.Store(true)
 	s.recordRecovery()
-	if previous != mode {
-		s.logger.Info("inbound mTLS policy updated", "previous", previous, "current", mode)
+	if previous != state.Mode {
+		s.logger.Info("inbound mTLS policy updated", "previous", previous, "current", state.Mode)
 	}
 	return nil
 }

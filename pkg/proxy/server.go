@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"sync"
@@ -36,6 +37,8 @@ type Server struct {
 	connections   map[net.Conn]struct{}
 	connectionsWG sync.WaitGroup
 }
+
+var errFaultInjected = errors.New("fault injected")
 
 func NewServer(config Config, logger *slog.Logger) (*Server, error) {
 	if err := config.Validate(); err != nil {
@@ -165,7 +168,7 @@ func (s *Server) accept(ctx context.Context, listener net.Listener) error {
 			if slots != nil {
 				defer func() { <-slots }()
 			}
-			if err := s.handleConnection(ctx, connection); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
+			if err := s.handleConnection(ctx, connection); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) && !errors.Is(err, errFaultInjected) {
 				s.metrics.ConnectionFailed()
 				s.logger.Warn("inbound connection failed", "remote", connection.RemoteAddr().String(), "error", err)
 			}
@@ -209,6 +212,24 @@ func (s *Server) handleConnection(ctx context.Context, downstream net.Conn) erro
 		return fmt.Errorf("clear handshake deadline: %w", err)
 	}
 
+	fault := s.policy.Fault()
+	if fault.Delay > 0 && faultPercentageMatches(fault.DelayPercentage) {
+		s.metrics.FaultDelayed()
+		timer := time.NewTimer(fault.Delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if fault.AbortStatus != 0 && faultPercentageMatches(fault.AbortPercentage) {
+		s.metrics.FaultAborted()
+		return fmt.Errorf("%w: configured HTTP status %d; L4 data plane closed connection", errFaultInjected, fault.AbortStatus)
+	}
+
 	dialer := net.Dialer{Timeout: s.config.ConnectTimeout, KeepAlive: 30 * time.Second}
 	upstream, err := dialer.DialContext(ctx, "tcp", s.config.UpstreamAddress)
 	if err != nil {
@@ -221,6 +242,17 @@ func (s *Server) handleConnection(ctx context.Context, downstream net.Conn) erro
 		return fmt.Errorf("proxy connection: %w", copyErr)
 	}
 	return nil
+}
+
+func faultPercentageMatches(percentage uint32) bool {
+	switch {
+	case percentage == 0:
+		return false
+	case percentage >= 100:
+		return true
+	default:
+		return rand.Uint32N(100) < percentage
+	}
 }
 
 func (s *Server) serveAdmin(ctx context.Context, listener net.Listener) error {

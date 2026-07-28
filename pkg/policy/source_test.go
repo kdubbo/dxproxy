@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kdubbo/dxplane/pkg/telemetry"
 )
@@ -79,6 +80,52 @@ func TestModeFromRuntimeConfigRejectsUnknownVersionAndMode(t *testing.T) {
 				t.Fatal("modeFromRuntimeConfig() error = nil, want error")
 			}
 		})
+	}
+}
+
+func TestStateFromRuntimeConfigReadsFaultInjection(t *testing.T) {
+	data := []byte(`{
+		"version":"dubbo.apache.org/proxyless-grpc/v1",
+		"services":[{
+			"host":"local.default.svc",
+			"ports":[{
+				"port":80,
+				"mtlsMode":"PERMISSIVE",
+				"fault":{
+					"delay":{"fixedDelay":"250ms","percentage":20},
+					"abort":{"httpStatus":503,"percentage":10}
+				}
+			}]
+		}]
+	}`)
+	state, err := stateFromRuntimeConfig(data, 80)
+	if err != nil {
+		t.Fatalf("stateFromRuntimeConfig() error = %v", err)
+	}
+	if state.Mode != ModePermissive {
+		t.Fatalf("mode = %q, want %q", state.Mode, ModePermissive)
+	}
+	want := Fault{
+		Delay:           250 * time.Millisecond,
+		DelayPercentage: 20,
+		AbortStatus:     503,
+		AbortPercentage: 10,
+	}
+	if state.Fault != want {
+		t.Fatalf("fault = %+v, want %+v", state.Fault, want)
+	}
+}
+
+func TestStateFromRuntimeConfigRejectsInvalidFault(t *testing.T) {
+	tests := []string{
+		`{"services":[{"host":"bad","ports":[{"port":80,"mtlsMode":"PERMISSIVE","fault":{"delay":{"fixedDelay":"bad","percentage":10}}}]}]}`,
+		`{"services":[{"host":"bad","ports":[{"port":80,"mtlsMode":"PERMISSIVE","fault":{"delay":{"fixedDelay":"1s","percentage":101}}}]}]}`,
+		`{"services":[{"host":"bad","ports":[{"port":80,"mtlsMode":"PERMISSIVE","fault":{"abort":{"httpStatus":200,"percentage":10}}}]}]}`,
+	}
+	for _, data := range tests {
+		if _, err := stateFromRuntimeConfig([]byte(data), 80); err == nil {
+			t.Fatalf("stateFromRuntimeConfig(%s) error = nil, want error", data)
+		}
 	}
 }
 

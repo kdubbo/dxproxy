@@ -2,7 +2,7 @@ module github.com/kdubbo/dxplane
 
 go 1.25.12
 
-require github.com/kdubbo/xds-api v0.0.0-20260728021336-34287e74f6f2
+require github.com/kdubbo/xds-api v0.0.0-20260728161804-af6dbc11367a
 
 require (
 	golang.org/x/net v0.56.0 // indirect
