@@ -46,6 +46,10 @@ func run(ctx context.Context, args []string, version string, stdout, stderr io.W
 		ConfigRefreshInterval: durationFromEnv("DUBBO_GRPC_INBOUND_CONFIG_REFRESH_INTERVAL", time.Second),
 		AdminAddress:          firstNonEmpty(os.Getenv("DUBBO_GRPC_INBOUND_ADMIN_ADDRESS"), ":15020"),
 		MaxConnections:        intFromEnv("DUBBO_GRPC_INBOUND_MAX_CONNECTIONS", 10_000),
+		// 5s + 25s fits inside the 30s default terminationGracePeriodSeconds, so
+		// the drain finishes before kubelet escalates to SIGKILL.
+		TerminationDrainDelay:    durationFromEnv("DUBBO_GRPC_INBOUND_TERMINATION_DRAIN_DELAY", 5*time.Second),
+		TerminationDrainDuration: durationFromEnv("DUBBO_GRPC_INBOUND_TERMINATION_DRAIN_DURATION", 25*time.Second),
 	}
 
 	flags := flag.NewFlagSet("dxplane", flag.ContinueOnError)
@@ -62,6 +66,8 @@ func run(ctx context.Context, args []string, version string, stdout, stderr io.W
 	flags.DurationVar(&cfg.ConfigRefreshInterval, "config-refresh-interval", cfg.ConfigRefreshInterval, "certificate and runtime policy refresh interval")
 	flags.StringVar(&cfg.AdminAddress, "admin-address", cfg.AdminAddress, "health, readiness, and metrics listener; empty disables it")
 	flags.IntVar(&cfg.MaxConnections, "max-connections", cfg.MaxConnections, "maximum concurrent inbound connections; zero is unlimited")
+	flags.DurationVar(&cfg.TerminationDrainDelay, "termination-drain-delay", cfg.TerminationDrainDelay, "time spent failing readiness while still accepting, so the endpoint is withdrawn before the listener closes")
+	flags.DurationVar(&cfg.TerminationDrainDuration, "termination-drain-duration", cfg.TerminationDrainDuration, "maximum time in-flight connections may run after the listener closes")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

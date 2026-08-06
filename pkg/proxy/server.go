@@ -32,11 +32,16 @@ type Server struct {
 	policy       *policy.Source
 	certificates *security.CertificateSource
 	ready        atomic.Bool
+	terminating  atomic.Bool
 
 	connectionsMu sync.Mutex
 	connections   map[net.Conn]struct{}
 	connectionsWG sync.WaitGroup
 }
+
+// drainPollInterval is how often the drain loop rechecks whether the last
+// in-flight connection has finished.
+const drainPollInterval = 100 * time.Millisecond
 
 var errFaultInjected = errors.New("fault injected")
 
@@ -94,45 +99,92 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) serve(ctx context.Context, listener, adminListener net.Listener) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Connection handling, certificate refresh and the admin endpoint all run on
+	// a context that survives ctx: SIGTERM starts the drain, and everything still
+	// in flight needs fresh certificates and a reachable /readyz until it ends.
+	background, stopBackground := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopBackground()
 
 	if s.certificates != nil {
-		go s.certificates.Run(ctx, s.config.ConfigRefreshInterval)
+		go s.certificates.Run(background, s.config.ConfigRefreshInterval)
 	}
-	go s.policy.Run(ctx, s.config.ConfigRefreshInterval)
+	go s.policy.Run(background, s.config.ConfigRefreshInterval)
 
-	errCh := make(chan error, 2)
+	adminErrCh := make(chan error, 1)
 	if adminListener != nil {
 		go func() {
-			errCh <- s.serveAdmin(ctx, adminListener)
+			adminErrCh <- s.serveAdmin(background, adminListener)
 		}()
 	}
 
+	acceptErrCh := make(chan error, 1)
 	s.ready.Store(true)
 	s.logger.Info("dxplane inbound listener ready", "address", listener.Addr().String(), "upstream", s.config.UpstreamAddress)
 	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
-	}()
-	go func() {
-		errCh <- s.accept(ctx, listener)
+		acceptErrCh <- s.accept(background, listener)
 	}()
 
-	err := <-errCh
-	wasCanceled := ctx.Err() != nil
-	cancel()
-	s.ready.Store(false)
-	_ = listener.Close()
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case serveErr = <-acceptErrCh:
+	case serveErr = <-adminErrCh:
+	}
+
+	s.drain(listener)
+
+	stopBackground()
 	if adminListener != nil {
 		_ = adminListener.Close()
 	}
-	s.closeConnections()
-	s.connectionsWG.Wait()
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, net.ErrClosed) && !wasCanceled {
-		return err
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, net.ErrClosed) {
+		return serveErr
 	}
 	return nil
+}
+
+// drain shuts the listener down in the two phases a pod that is scaled away
+// needs:
+//
+//  1. Withdrawal. Report not-ready but keep accepting, so kubelet fails the
+//     readiness probe and the EndpointSlice controller removes this pod while
+//     it can still serve. Callers whose EDS has not caught up keep succeeding
+//     instead of hitting a closed port.
+//  2. Drain. Close the listener, then let in-flight connections finish until
+//     the drain budget expires. Whatever is left is cut and counted, because a
+//     pod that never exits blocks the scale-to-zero it was asked to perform.
+func (s *Server) drain(listener net.Listener) {
+	started := time.Now()
+	s.terminating.Store(true)
+	s.metrics.TerminationStarted()
+
+	if s.config.TerminationDrainDelay > 0 {
+		s.logger.Info("dxplane terminating; reporting not-ready before closing the listener",
+			"withdrawalDelay", s.config.TerminationDrainDelay,
+			"activeConnections", s.activeConnections())
+		time.Sleep(s.config.TerminationDrainDelay)
+	}
+
+	_ = listener.Close()
+	s.ready.Store(false)
+
+	deadline := time.Now().Add(s.config.TerminationDrainDuration)
+	for s.activeConnections() > 0 && time.Now().Before(deadline) {
+		time.Sleep(drainPollInterval)
+	}
+
+	if remaining := s.activeConnections(); remaining > 0 {
+		s.logger.Warn("drain budget expired; closing connections that are still open",
+			"remaining", remaining,
+			"drainDuration", s.config.TerminationDrainDuration)
+		s.metrics.ConnectionsForceClosed(uint64(remaining))
+	}
+	s.closeConnections()
+	s.connectionsWG.Wait()
+
+	elapsed := time.Since(started)
+	s.metrics.TerminationCompleted(elapsed)
+	s.logger.Info("dxplane drained", "duration", elapsed)
 }
 
 func (s *Server) accept(ctx context.Context, listener net.Listener) error {
@@ -280,7 +332,10 @@ func (s *Server) adminHandler() http.Handler {
 		_, _ = io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		ready := s.ready.Load() && s.policy.Loaded() && (s.certificates == nil || s.certificates.Loaded())
+		// Terminating fails readiness first, before the listener closes; that is
+		// what withdraws this pod from the EndpointSlice while it can still serve.
+		ready := !s.terminating.Load() && s.ready.Load() && s.policy.Loaded() &&
+			(s.certificates == nil || s.certificates.Loaded())
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		if !ready {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -308,6 +363,12 @@ func (s *Server) untrackConnection(connection net.Conn) {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
 	delete(s.connections, connection)
+}
+
+func (s *Server) activeConnections() int {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	return len(s.connections)
 }
 
 func (s *Server) closeConnections() {

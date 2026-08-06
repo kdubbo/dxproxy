@@ -28,6 +28,14 @@ type Config struct {
 	ConfigRefreshInterval time.Duration
 	AdminAddress          string
 	MaxConnections        int
+
+	// TerminationDrainDelay is how long the pod keeps accepting connections
+	// after reporting not-ready, giving the EndpointSlice controller and every
+	// caller's EDS time to drop this endpoint before the listener disappears.
+	TerminationDrainDelay time.Duration
+	// TerminationDrainDuration bounds how long in-flight connections may run
+	// after the listener closes. Whatever is left when it expires is cut.
+	TerminationDrainDuration time.Duration
 }
 
 func (c Config) Validate() error {
@@ -59,6 +67,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxConnections < 0 {
 		return fmt.Errorf("max connections cannot be negative")
+	}
+	if c.TerminationDrainDelay < 0 {
+		return fmt.Errorf("termination drain delay cannot be negative")
+	}
+	if c.TerminationDrainDuration < 0 {
+		return fmt.Errorf("termination drain duration cannot be negative")
 	}
 	modeOverride, hasOverride, err := policy.ParseOptionalMode(c.ModeOverride)
 	if err != nil {
