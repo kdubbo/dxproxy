@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/policy"
+	"github.com/kdubbo/dxproxy/pkg/policy"
 )
 
 type Config struct {

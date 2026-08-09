@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/telemetry"
+	"github.com/kdubbo/dxproxy/pkg/telemetry"
 )
 
 func TestModeFromRuntimeConfigSelectsWorkloadServices(t *testing.T) {
@@ -71,7 +71,7 @@ func TestModeFromRuntimeConfigRejectsUnknownVersionAndMode(t *testing.T) {
 		name string
 		data string
 	}{
-		{"version", `{"version":"dubbo.apache.org/proxyless-grpc/v2"}`},
+		{"version", `{"version":"dubbo.apache.org/inherent-grpc/v2"}`},
 		{"mode", `{"services":[{"host":"bad","ports":[{"port":80,"mtlsMode":"UNKNOWN"}]}]}`},
 	}
 	for _, test := range tests {
@@ -85,7 +85,7 @@ func TestModeFromRuntimeConfigRejectsUnknownVersionAndMode(t *testing.T) {
 
 func TestStateFromRuntimeConfigReadsFaultInjection(t *testing.T) {
 	data := []byte(`{
-		"version":"dubbo.apache.org/proxyless-grpc/v1",
+		"version":"dubbo.apache.org/inherent-grpc/v1",
 		"services":[{
 			"host":"local.default.svc",
 			"ports":[{

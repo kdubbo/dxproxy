@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/policy"
-	"github.com/kdubbo/dxplane/pkg/proxy"
+	"github.com/kdubbo/dxproxy/pkg/policy"
+	"github.com/kdubbo/dxproxy/pkg/proxy"
 )
 
 const defaultRuntimeConfigPath = "/etc/dubbo/proxy/dubbo-grpc-xds.json"
@@ -52,12 +52,12 @@ func run(ctx context.Context, args []string, version string, stdout, stderr io.W
 		TerminationDrainDuration: durationFromEnv("DUBBO_GRPC_INBOUND_TERMINATION_DRAIN_DURATION", 25*time.Second),
 	}
 
-	flags := flag.NewFlagSet("dxplane", flag.ContinueOnError)
+	flags := flag.NewFlagSet("dxproxy", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&cfg.ListenAddress, "listen", cfg.ListenAddress, "inbound listener address")
 	flags.StringVar(&cfg.UpstreamAddress, "upstream", cfg.UpstreamAddress, "local plaintext upstream address")
 	flags.StringVar(&cfg.BootstrapPath, "bootstrap", cfg.BootstrapPath, "gRPC xDS bootstrap file")
-	flags.StringVar(&cfg.RuntimeConfigPath, "runtime-config", cfg.RuntimeConfigPath, "proxyless runtime policy file; empty disables runtime policy reload")
+	flags.StringVar(&cfg.RuntimeConfigPath, "runtime-config", cfg.RuntimeConfigPath, "Inherent runtime policy file; empty disables runtime policy reload")
 	flags.StringVar(&cfg.ModeOverride, "mtls-mode", cfg.ModeOverride, "override inbound mTLS mode: DISABLE, PERMISSIVE, or STRICT")
 	flags.StringVar(&cfg.DefaultMode, "default-mtls-mode", cfg.DefaultMode, "fail-safe mTLS mode before runtime policy is available")
 	flags.IntVar(&cfg.PolicyPort, "policy-port", cfg.PolicyPort, "optional Service port used to select inbound policy")

@@ -27,9 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/policy"
-	"github.com/kdubbo/dxplane/pkg/security"
-	"github.com/kdubbo/dxplane/pkg/telemetry"
+	"github.com/kdubbo/dxproxy/pkg/policy"
+	"github.com/kdubbo/dxproxy/pkg/security"
+	"github.com/kdubbo/dxproxy/pkg/telemetry"
 )
 
 func TestServerStrictMTLSAndProxy(t *testing.T) {
@@ -144,7 +144,7 @@ func TestServerAppliesInboundFaultBeforeUpstream(t *testing.T) {
 
 	runtimePath := filepath.Join(t.TempDir(), "runtime.json")
 	runtime := `{
-		"version":"dubbo.apache.org/proxyless-grpc/v1",
+		"version":"dubbo.apache.org/inherent-grpc/v1",
 		"services":[{
 			"host":"local.default.svc",
 			"ports":[{
@@ -241,7 +241,7 @@ func TestAdminHandlerReportsReadinessAndMetrics(t *testing.T) {
 
 	response = httptest.NewRecorder()
 	server.adminHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if !strings.Contains(response.Body.String(), "dxplane_connections_opened_total") {
+	if !strings.Contains(response.Body.String(), "dxproxy_connections_opened_total") {
 		t.Fatalf("metrics response missing connection metric: %s", response.Body.String())
 	}
 }
@@ -298,7 +298,7 @@ func (m certificateMaterial) client() *http.Client {
 		TLSClientConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			RootCAs:      m.rootPool,
-			ServerName:   "dxplane.test",
+			ServerName:   "dxproxy.test",
 			Certificates: []tls.Certificate{m.clientCert},
 		},
 	}}
@@ -307,7 +307,7 @@ func (m certificateMaterial) client() *http.Client {
 func writeCertificateMaterial(t *testing.T, directory, name string) certificateMaterial {
 	t.Helper()
 	caCert, caKey := newTestCA(t, name)
-	serverCert, serverKey := newSignedCertificate(t, caCert, caKey, "dxplane.test")
+	serverCert, serverKey := newSignedCertificate(t, caCert, caKey, "dxproxy.test")
 	clientCert, clientKey := newSignedCertificate(t, caCert, caKey, "client.test")
 	certPath := filepath.Join(directory, "cert-chain.pem")
 	keyPath := filepath.Join(directory, "key.pem")

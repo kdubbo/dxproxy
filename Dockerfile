@@ -20,11 +20,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
       -ldflags="-s -w -X main.version=${GIT_VERSION}" \
-      -o /out/dxplane ./cmd
+      -o /out/dxproxy ./cmd
 
 FROM scratch
 
-COPY --from=builder /out/dxplane /usr/local/bin/dxplane
+COPY --from=builder /out/dxproxy /usr/local/bin/dxproxy
 
 USER 65532:65532
-ENTRYPOINT ["/usr/local/bin/dxplane"]
+ENTRYPOINT ["/usr/local/bin/dxproxy"]

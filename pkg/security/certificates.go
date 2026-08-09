@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/telemetry"
+	"github.com/kdubbo/dxproxy/pkg/telemetry"
 	xdsresolver "github.com/kdubbo/xds-api/grpc/resolver"
 )
 

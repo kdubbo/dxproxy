@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/policy"
+	"github.com/kdubbo/dxproxy/pkg/policy"
 )
 
 // startDrainServer runs a plaintext server against a TCP echo upstream and
