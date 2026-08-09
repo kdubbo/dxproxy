@@ -20,9 +20,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/policy"
-	"github.com/kdubbo/dxplane/pkg/security"
-	"github.com/kdubbo/dxplane/pkg/telemetry"
+	"github.com/kdubbo/dxproxy/pkg/policy"
+	"github.com/kdubbo/dxproxy/pkg/security"
+	"github.com/kdubbo/dxproxy/pkg/telemetry"
 )
 
 type Server struct {
@@ -119,7 +119,7 @@ func (s *Server) serve(ctx context.Context, listener, adminListener net.Listener
 
 	acceptErrCh := make(chan error, 1)
 	s.ready.Store(true)
-	s.logger.Info("dxplane inbound listener ready", "address", listener.Addr().String(), "upstream", s.config.UpstreamAddress)
+	s.logger.Info("dxproxy inbound listener ready", "address", listener.Addr().String(), "upstream", s.config.UpstreamAddress)
 	go func() {
 		acceptErrCh <- s.accept(background, listener)
 	}()
@@ -159,7 +159,7 @@ func (s *Server) drain(listener net.Listener) {
 	s.metrics.TerminationStarted()
 
 	if s.config.TerminationDrainDelay > 0 {
-		s.logger.Info("dxplane terminating; reporting not-ready before closing the listener",
+		s.logger.Info("dxproxy terminating; reporting not-ready before closing the listener",
 			"withdrawalDelay", s.config.TerminationDrainDelay,
 			"activeConnections", s.activeConnections())
 		time.Sleep(s.config.TerminationDrainDelay)
@@ -184,7 +184,7 @@ func (s *Server) drain(listener net.Listener) {
 
 	elapsed := time.Since(started)
 	s.metrics.TerminationCompleted(elapsed)
-	s.logger.Info("dxplane drained", "duration", elapsed)
+	s.logger.Info("dxproxy drained", "duration", elapsed)
 }
 
 func (s *Server) accept(ctx context.Context, listener net.Listener) error {

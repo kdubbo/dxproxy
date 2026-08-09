@@ -66,11 +66,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - name: Build dxplane
+      - name: Build dxproxy
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: CGO_ENABLED=0 go build -trimpath -o dxplane ./cmd
+        run: CGO_ENABLED=0 go build -trimpath -o dxproxy ./cmd
 
   image:
     runs-on: ubuntu-latest

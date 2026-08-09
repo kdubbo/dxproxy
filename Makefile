@@ -6,11 +6,11 @@
 .PHONY: build test test-race vet fmt check docker-build clean
 
 GIT_VERSION ?= dev
-IMAGE ?= kdubbo/dxplane:dev
+IMAGE ?= kdubbo/dxproxy:dev
 
 build:
 	mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(GIT_VERSION)" -o bin/dxplane ./cmd
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(GIT_VERSION)" -o bin/dxproxy ./cmd
 
 test:
 	go test ./...

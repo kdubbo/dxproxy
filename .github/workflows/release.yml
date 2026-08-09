@@ -31,12 +31,12 @@ jobs:
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             GOOS=${target%/*}
             GOARCH=${target#*/}
-            output="dist/dxplane-${VERSION}-${GOOS}-${GOARCH}"
+            output="dist/dxproxy-${VERSION}-${GOOS}-${GOARCH}"
             CGO_ENABLED=0 GOOS=${GOOS} GOARCH=${GOARCH} \
               go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
               -o "${output}" ./cmd
           done
-          (cd dist && sha256sum dxplane-* > checksums.txt)
+          (cd dist && sha256sum dxproxy-* > checksums.txt)
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,6 +60,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/kdubbo/dxplane:${{ github.ref_name }}
-            ghcr.io/kdubbo/dxplane:latest
+            ghcr.io/kdubbo/dxproxy:${{ github.ref_name }}
+            ghcr.io/kdubbo/dxproxy:latest
           build-args: GIT_VERSION=${{ github.ref_name }}

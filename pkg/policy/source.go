@@ -17,10 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kdubbo/dxplane/pkg/telemetry"
+	"github.com/kdubbo/dxproxy/pkg/telemetry"
 )
 
-const RuntimeConfigVersion = "dubbo.apache.org/proxyless-grpc/v1"
+const RuntimeConfigVersion = "dubbo.apache.org/inherent-grpc/v1"
 
 type Mode string
 
