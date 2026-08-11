@@ -14,12 +14,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,72 +192,35 @@ func TestServerAppliesInboundFaultBeforeUpstream(t *testing.T) {
 	}
 }
 
-func TestServerEnforcesConnectionAuthorizationPolicy(t *testing.T) {
+func TestServerEnforcesWorkloadPrincipalAuthorization(t *testing.T) {
 	material := writeCertificateMaterial(t, t.TempDir(), "authz")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("denied connection reached upstream")
+		_, _ = io.WriteString(w, "authorized\n")
 	}))
 	defer upstream.Close()
 
 	runtimePath := filepath.Join(t.TempDir(), "runtime.json")
-	runtime := `{
-		"version":"dubbo.apache.org/inherent-grpc/v1",
-		"services":[{"host":"local.default.svc","ports":[{
-			"port":8080,
-			"mtlsMode":"PERMISSIVE",
-			"authorizationPolicies":[{
-				"name":"deny-loopback",
-				"action":"DENY",
-				"rules":[{"sources":[{"ipBlocks":["127.0.0.0/8"]}]}]
-			}]
-		}]}]
-	}`
-	if err := os.WriteFile(runtimePath, []byte(runtime), 0o600); err != nil {
-		t.Fatal(err)
+	write := func(principal string) {
+		t.Helper()
+		data := fmt.Sprintf(`{
+			"version":"dubbo.apache.org/inherent-grpc/v1",
+			"services":[{"host":"local.default.svc","ports":[{
+				"port":8443,
+				"mtlsMode":"STRICT",
+				"authorizationPolicies":[{
+					"name":"allow-client",
+					"action":"ALLOW",
+					"rules":[{"sources":[{"principals":[%q]}]}]
+				}]
+			}]}]
+		}`, principal)
+		if err := os.WriteFile(runtimePath, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	write("cluster.local/ns/default/sa/client")
 
 	server, address, stop := startTestServer(t, Config{
-		UpstreamAddress:       upstream.Listener.Addr().String(),
-		BootstrapPath:         material.bootstrap,
-		RuntimeConfigPath:     runtimePath,
-		PolicyPort:            8080,
-		DefaultMode:           string(policy.ModeStrict),
-		HandshakeTimeout:      time.Second,
-		ConnectTimeout:        time.Second,
-		ConfigRefreshInterval: time.Second,
-	}, material)
-	defer stop()
-
-	_, err := (&http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true}}).Get("http://" + address + "/")
-	if err == nil {
-		t.Fatal("denied request succeeded")
-	}
-	if server.metrics.Snapshot().AuthorizationDenials != 1 {
-		t.Fatalf("authorization denials = %d, want 1", server.metrics.Snapshot().AuthorizationDenials)
-	}
-}
-
-func TestServerEnforcesMinimumTLS13(t *testing.T) {
-	material := writeCertificateMaterial(t, t.TempDir(), "tls13")
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "tls13-ok\n")
-	}))
-	defer upstream.Close()
-
-	runtimePath := filepath.Join(t.TempDir(), "runtime.json")
-	runtime := `{
-		"version":"dubbo.apache.org/inherent-grpc/v1",
-		"services":[{"host":"local.default.svc","ports":[{
-			"port":8443,
-			"mtlsMode":"STRICT",
-			"minimumTlsVersion":"TLSV1_3"
-		}]}]
-	}`
-	if err := os.WriteFile(runtimePath, []byte(runtime), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	_, address, stop := startTestServer(t, Config{
 		UpstreamAddress:       upstream.Listener.Addr().String(),
 		BootstrapPath:         material.bootstrap,
 		RuntimeConfigPath:     runtimePath,
@@ -267,24 +232,22 @@ func TestServerEnforcesMinimumTLS13(t *testing.T) {
 	}, material)
 	defer stop()
 
-	clientTLS12 := &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		MaxVersion:   tls.VersionTLS12,
-		RootCAs:      material.rootPool,
-		ServerName:   "dxproxy.test",
-		Certificates: []tls.Certificate{material.clientCert},
-	}
-	connection, err := tls.Dial("tcp", address, clientTLS12)
-	if err == nil {
-		_ = connection.Close()
-		t.Fatal("TLS 1.2 handshake succeeded with TLSV1_3 minimum")
-	}
-
 	response, err := material.client().Get("https://" + address + "/")
 	if err != nil {
-		t.Fatalf("TLS 1.3 request failed: %v", err)
+		t.Fatalf("authorized request failed: %v", err)
 	}
 	_ = response.Body.Close()
+
+	write("cluster.local/ns/default/sa/other")
+	if err := server.policy.Reload(); err != nil {
+		t.Fatalf("reload authorization policy: %v", err)
+	}
+	if _, err := material.client().Get("https://" + address + "/"); err == nil {
+		t.Fatal("unauthorized workload request succeeded")
+	}
+	if got := server.metrics.Snapshot().AuthorizationDenials; got != 1 {
+		t.Fatalf("authorization denials = %d, want 1", got)
+	}
 }
 
 func TestCertificateReloadRetainsLastValidConfiguration(t *testing.T) {
@@ -486,6 +449,13 @@ func newSignedCertificate(t *testing.T, ca *x509.Certificate, caKey *rsa.Private
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+	if commonName == "client.test" {
+		template.URIs = []*url.URL{{
+			Scheme: "spiffe",
+			Host:   "cluster.local",
+			Path:   "/ns/default/sa/client",
+		}}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, ca, &key.PublicKey, caKey)
 	if err != nil {

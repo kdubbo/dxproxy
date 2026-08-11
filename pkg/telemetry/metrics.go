@@ -22,7 +22,6 @@ type Metrics struct {
 	faultDelays             atomic.Uint64
 	faultAborts             atomic.Uint64
 	authorizationDenials    atomic.Uint64
-	authorizationAudits     atomic.Uint64
 	tlsConnections          atomic.Uint64
 	plaintextConnections    atomic.Uint64
 	bytesToUpstream         atomic.Uint64
@@ -44,7 +43,6 @@ type Snapshot struct {
 	FaultDelays             uint64
 	FaultAborts             uint64
 	AuthorizationDenials    uint64
-	AuthorizationAudits     uint64
 	TLSConnections          uint64
 	PlaintextConnections    uint64
 	BytesToUpstream         uint64
@@ -88,10 +86,6 @@ func (m *Metrics) FaultAborted() {
 
 func (m *Metrics) AuthorizationDenied() {
 	m.authorizationDenials.Add(1)
-}
-
-func (m *Metrics) AuthorizationAudited() {
-	m.authorizationAudits.Add(1)
 }
 
 func (m *Metrics) TLSConnection() {
@@ -146,7 +140,6 @@ func (m *Metrics) Snapshot() Snapshot {
 		FaultDelays:             m.faultDelays.Load(),
 		FaultAborts:             m.faultAborts.Load(),
 		AuthorizationDenials:    m.authorizationDenials.Load(),
-		AuthorizationAudits:     m.authorizationAudits.Load(),
 		TLSConnections:          m.tlsConnections.Load(),
 		PlaintextConnections:    m.plaintextConnections.Load(),
 		BytesToUpstream:         m.bytesToUpstream.Load(),
@@ -175,8 +168,7 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 		{"dxproxy_connections_force_closed_total", "Total connections closed because the drain budget expired.", "counter", snapshot.ConnectionsForceClosed},
 		{"dxproxy_fault_delays_total", "Total inbound connections delayed by fault injection.", "counter", snapshot.FaultDelays},
 		{"dxproxy_fault_aborts_total", "Total inbound connections aborted by fault injection.", "counter", snapshot.FaultAborts},
-		{"dxproxy_authorization_denials_total", "Total inbound connections denied by AuthorizationPolicy.", "counter", snapshot.AuthorizationDenials},
-		{"dxproxy_authorization_audits_total", "Total dry-run AuthorizationPolicy matches.", "counter", snapshot.AuthorizationAudits},
+		{"dxproxy_authorization_denials_total", "Total inbound connections denied by authorization policy.", "counter", snapshot.AuthorizationDenials},
 		{"dxproxy_tls_connections_total", "Total accepted TLS connections.", "counter", snapshot.TLSConnections},
 		{"dxproxy_plaintext_connections_total", "Total accepted plaintext connections.", "counter", snapshot.PlaintextConnections},
 		{"dxproxy_bytes_to_upstream_total", "Bytes proxied from the caller to the local application.", "counter", snapshot.BytesToUpstream},

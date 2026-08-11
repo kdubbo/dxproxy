@@ -16,8 +16,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/netip"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,8 +44,10 @@ type Server struct {
 // in-flight connection has finished.
 const drainPollInterval = 100 * time.Millisecond
 
-var errFaultInjected = errors.New("fault injected")
-var errAuthorizationDenied = errors.New("authorization denied")
+var (
+	errAuthorizationDenied = errors.New("authorization denied")
+	errFaultInjected       = errors.New("fault injected")
+)
 
 func NewServer(config Config, logger *slog.Logger) (*Server, error) {
 	if err := config.Validate(); err != nil {
@@ -224,8 +224,7 @@ func (s *Server) accept(ctx context.Context, listener net.Listener) error {
 			if slots != nil {
 				defer func() { <-slots }()
 			}
-			if err := s.handleConnection(ctx, connection); err != nil && ctx.Err() == nil &&
-				!errors.Is(err, io.EOF) && !errors.Is(err, errFaultInjected) && !errors.Is(err, errAuthorizationDenied) {
+			if err := s.handleConnection(ctx, connection); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) && !errors.Is(err, errFaultInjected) {
 				s.metrics.ConnectionFailed()
 				s.logger.Warn("inbound connection failed", "remote", connection.RemoteAddr().String(), "error", err)
 			}
@@ -253,9 +252,7 @@ func (s *Server) handleConnection(ctx context.Context, downstream net.Conn) erro
 		if s.certificates == nil || s.certificates.Current() == nil {
 			return fmt.Errorf("TLS certificate configuration is unavailable")
 		}
-		tlsConfig := s.certificates.Current()
-		tlsConfig.MinVersion = s.policy.MinimumTLSVersion()
-		tlsConnection := tls.Server(buffered, tlsConfig)
+		tlsConnection := tls.Server(buffered, s.certificates.Current())
 		if err := tlsConnection.HandshakeContext(ctx); err != nil {
 			return fmt.Errorf("mTLS handshake: %w", err)
 		}
@@ -273,23 +270,10 @@ func (s *Server) handleConnection(ctx context.Context, downstream net.Conn) erro
 		return fmt.Errorf("clear handshake deadline: %w", err)
 	}
 
-	attributes := connectionAttributes(downstream, principal, s.config.PolicyPort)
-	decision := s.policy.Authorize(attributes)
-	for _, policyName := range decision.AuditPolicies {
-		s.metrics.AuthorizationAudited()
-		s.logger.Info("dry-run authorization policy matched",
-			"policy", policyName,
-			"principal", attributes.Principal,
-			"sourceIP", attributes.SourceIP,
-			"port", attributes.Port)
-	}
+	decision := s.policy.Authorize(principal)
 	if !decision.Allowed {
 		s.metrics.AuthorizationDenied()
-		s.logger.Info("inbound connection denied",
-			"policy", decision.DeniedBy,
-			"principal", attributes.Principal,
-			"sourceIP", attributes.SourceIP,
-			"port", attributes.Port)
+		s.logger.Info("inbound connection denied", "policy", decision.DeniedBy, "principal", principal)
 		return fmt.Errorf("%w by policy %s", errAuthorizationDenied, decision.DeniedBy)
 	}
 
@@ -335,44 +319,6 @@ func peerPrincipal(state tls.ConnectionState) string {
 		}
 	}
 	return ""
-}
-
-func connectionAttributes(connection net.Conn, principal string, policyPort int) policy.ConnectionAttributes {
-	namespace, serviceAccount := identityParts(principal)
-	port := policyPort
-	if port == 0 {
-		if _, rawPort, err := net.SplitHostPort(connection.LocalAddr().String()); err == nil {
-			port, _ = strconv.Atoi(rawPort)
-		}
-	}
-	return policy.ConnectionAttributes{
-		Principal:      principal,
-		Namespace:      namespace,
-		ServiceAccount: serviceAccount,
-		SourceIP:       addressFromNetAddr(connection.RemoteAddr()),
-		Port:           port,
-	}
-}
-
-func identityParts(principal string) (string, string) {
-	identity := strings.TrimPrefix(principal, "spiffe://")
-	parts := strings.Split(identity, "/")
-	if len(parts) != 5 || parts[1] != "ns" || parts[3] != "sa" {
-		return "", ""
-	}
-	return parts[2], parts[2] + "/" + parts[4]
-}
-
-func addressFromNetAddr(address net.Addr) netip.Addr {
-	if tcpAddress, ok := address.(*net.TCPAddr); ok {
-		return tcpAddress.AddrPort().Addr().Unmap()
-	}
-	host, _, err := net.SplitHostPort(address.String())
-	if err != nil {
-		return netip.Addr{}
-	}
-	parsed, _ := netip.ParseAddr(strings.Trim(host, "[]"))
-	return parsed.Unmap()
 }
 
 func faultPercentageMatches(percentage uint32) bool {

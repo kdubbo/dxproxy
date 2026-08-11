@@ -116,35 +116,6 @@ func TestStateFromRuntimeConfigReadsFaultInjection(t *testing.T) {
 	}
 }
 
-func TestStateFromRuntimeConfigReadsSecurityPolicyAndTLSVersion(t *testing.T) {
-	data := []byte(`{
-		"version":"dubbo.apache.org/inherent-grpc/v1",
-		"services":[{
-			"host":"local.default.svc",
-			"ports":[{
-				"port":8080,
-				"mtlsMode":"STRICT",
-				"minimumTlsVersion":"TLSV1_3",
-				"authorizationPolicies":[{
-					"name":"allow-client",
-					"action":"ALLOW",
-					"rules":[{
-						"sources":[{"principals":["cluster.local/ns/default/sa/client"]}],
-						"operations":[{"ports":["8080"]}]
-					}]
-				}]
-			}]
-		}]
-	}`)
-	state, err := stateFromRuntimeConfig(data, 8080)
-	if err != nil {
-		t.Fatalf("stateFromRuntimeConfig() error = %v", err)
-	}
-	if state.MinimumTLSVersion != TLSVersion13 || len(state.AuthorizationPolicies) != 1 {
-		t.Fatalf("state = %#v", state)
-	}
-}
-
 func TestStateFromRuntimeConfigRejectsInvalidFault(t *testing.T) {
 	tests := []string{
 		`{"services":[{"host":"bad","ports":[{"port":80,"mtlsMode":"PERMISSIVE","fault":{"delay":{"fixedDelay":"bad","percentage":10}}}]}]}`,
@@ -155,6 +126,30 @@ func TestStateFromRuntimeConfigRejectsInvalidFault(t *testing.T) {
 		if _, err := stateFromRuntimeConfig([]byte(data), 80); err == nil {
 			t.Fatalf("stateFromRuntimeConfig(%s) error = nil, want error", data)
 		}
+	}
+}
+
+func TestStateFromRuntimeConfigLoadsAuthorizationPolicies(t *testing.T) {
+	data := []byte(`{
+		"services":[{
+			"host":"orders.default.svc",
+			"ports":[{
+				"port":80,
+				"mtlsMode":"STRICT",
+				"authorizationPolicies":[{
+					"name":"allow-client",
+					"action":"ALLOW",
+					"rules":[{"sources":[{"principals":["cluster.local/ns/default/sa/client"]}]}]
+				}]
+			}]
+		}]
+	}`)
+	state, err := stateFromRuntimeConfig(data, 80)
+	if err != nil {
+		t.Fatalf("stateFromRuntimeConfig() error = %v", err)
+	}
+	if len(state.AuthorizationPolicies) != 1 || state.AuthorizationPolicies[0].Name != "allow-client" {
+		t.Fatalf("authorization policies = %+v, want allow-client", state.AuthorizationPolicies)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,7 +71,6 @@ type runtimeService struct {
 type runtimePort struct {
 	Port                  int                   `json:"port"`
 	MTLSMode              string                `json:"mtlsMode"`
-	MinimumTLSVersion     string                `json:"minimumTlsVersion"`
 	AuthorizationPolicies []AuthorizationPolicy `json:"authorizationPolicies"`
 	Fault                 *runtimePortFault     `json:"fault"`
 }
@@ -99,7 +99,6 @@ type Fault struct {
 
 type State struct {
 	Mode                  Mode
-	MinimumTLSVersion     TLSVersion
 	AuthorizationPolicies []AuthorizationPolicy
 	Fault                 Fault
 }
@@ -115,7 +114,6 @@ func stateFromRuntimeConfig(data []byte, policyPort int) (State, error) {
 
 	services := workloadServices(cfg)
 	best := Mode("")
-	minimumTLSVersion := TLSVersion("")
 	var selectedFault *Fault
 	policies := make(map[string]AuthorizationPolicy)
 	for _, service := range services {
@@ -132,13 +130,6 @@ func stateFromRuntimeConfig(data []byte, policyPort int) (State, error) {
 			}
 			if modePriority(mode) > modePriority(best) {
 				best = mode
-			}
-			tlsVersion, err := ParseOptionalTLSVersion(port.MinimumTLSVersion)
-			if err != nil {
-				return State{}, fmt.Errorf("service %q port %d: %w", service.Host, port.Port, err)
-			}
-			if tlsVersionPriority(tlsVersion) > tlsVersionPriority(minimumTLSVersion) {
-				minimumTLSVersion = tlsVersion
 			}
 			for _, authorizationPolicy := range port.AuthorizationPolicies {
 				key := authorizationPolicy.Name + "\x00" + authorizationPolicy.Action
@@ -163,11 +154,16 @@ func stateFromRuntimeConfig(data []byte, policyPort int) (State, error) {
 		}
 		return State{}, fmt.Errorf("no inbound mTLS policy found for workload services")
 	}
-	state := State{Mode: best, MinimumTLSVersion: minimumTLSVersion}
+	state := State{Mode: best}
 	for _, authorizationPolicy := range policies {
 		state.AuthorizationPolicies = append(state.AuthorizationPolicies, authorizationPolicy)
 	}
-	sortAuthorizationPolicies(state.AuthorizationPolicies)
+	sort.Slice(state.AuthorizationPolicies, func(i, j int) bool {
+		if state.AuthorizationPolicies[i].Name == state.AuthorizationPolicies[j].Name {
+			return state.AuthorizationPolicies[i].Action < state.AuthorizationPolicies[j].Action
+		}
+		return state.AuthorizationPolicies[i].Name < state.AuthorizationPolicies[j].Name
+	})
 	if selectedFault != nil {
 		state.Fault = *selectedFault
 	}
@@ -267,12 +263,8 @@ func (s *Source) Fault() Fault {
 	return s.current.Load().(State).Fault
 }
 
-func (s *Source) MinimumTLSVersion() uint16 {
-	return s.current.Load().(State).MinimumTLSVersion.TLSVersion()
-}
-
-func (s *Source) Authorize(attributes ConnectionAttributes) Decision {
-	return Authorize(s.current.Load().(State).AuthorizationPolicies, attributes)
+func (s *Source) Authorize(principal string) Decision {
+	return Authorize(s.current.Load().(State).AuthorizationPolicies, principal)
 }
 
 func (s *Source) Loaded() bool {
