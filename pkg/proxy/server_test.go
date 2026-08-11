@@ -190,6 +190,103 @@ func TestServerAppliesInboundFaultBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestServerEnforcesConnectionAuthorizationPolicy(t *testing.T) {
+	material := writeCertificateMaterial(t, t.TempDir(), "authz")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("denied connection reached upstream")
+	}))
+	defer upstream.Close()
+
+	runtimePath := filepath.Join(t.TempDir(), "runtime.json")
+	runtime := `{
+		"version":"dubbo.apache.org/inherent-grpc/v1",
+		"services":[{"host":"local.default.svc","ports":[{
+			"port":8080,
+			"mtlsMode":"PERMISSIVE",
+			"authorizationPolicies":[{
+				"name":"deny-loopback",
+				"action":"DENY",
+				"rules":[{"sources":[{"ipBlocks":["127.0.0.0/8"]}]}]
+			}]
+		}]}]
+	}`
+	if err := os.WriteFile(runtimePath, []byte(runtime), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server, address, stop := startTestServer(t, Config{
+		UpstreamAddress:       upstream.Listener.Addr().String(),
+		BootstrapPath:         material.bootstrap,
+		RuntimeConfigPath:     runtimePath,
+		PolicyPort:            8080,
+		DefaultMode:           string(policy.ModeStrict),
+		HandshakeTimeout:      time.Second,
+		ConnectTimeout:        time.Second,
+		ConfigRefreshInterval: time.Second,
+	}, material)
+	defer stop()
+
+	_, err := (&http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true}}).Get("http://" + address + "/")
+	if err == nil {
+		t.Fatal("denied request succeeded")
+	}
+	if server.metrics.Snapshot().AuthorizationDenials != 1 {
+		t.Fatalf("authorization denials = %d, want 1", server.metrics.Snapshot().AuthorizationDenials)
+	}
+}
+
+func TestServerEnforcesMinimumTLS13(t *testing.T) {
+	material := writeCertificateMaterial(t, t.TempDir(), "tls13")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "tls13-ok\n")
+	}))
+	defer upstream.Close()
+
+	runtimePath := filepath.Join(t.TempDir(), "runtime.json")
+	runtime := `{
+		"version":"dubbo.apache.org/inherent-grpc/v1",
+		"services":[{"host":"local.default.svc","ports":[{
+			"port":8443,
+			"mtlsMode":"STRICT",
+			"minimumTlsVersion":"TLSV1_3"
+		}]}]
+	}`
+	if err := os.WriteFile(runtimePath, []byte(runtime), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, address, stop := startTestServer(t, Config{
+		UpstreamAddress:       upstream.Listener.Addr().String(),
+		BootstrapPath:         material.bootstrap,
+		RuntimeConfigPath:     runtimePath,
+		PolicyPort:            8443,
+		DefaultMode:           string(policy.ModeStrict),
+		HandshakeTimeout:      time.Second,
+		ConnectTimeout:        time.Second,
+		ConfigRefreshInterval: time.Second,
+	}, material)
+	defer stop()
+
+	clientTLS12 := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+		RootCAs:      material.rootPool,
+		ServerName:   "dxproxy.test",
+		Certificates: []tls.Certificate{material.clientCert},
+	}
+	connection, err := tls.Dial("tcp", address, clientTLS12)
+	if err == nil {
+		_ = connection.Close()
+		t.Fatal("TLS 1.2 handshake succeeded with TLSV1_3 minimum")
+	}
+
+	response, err := material.client().Get("https://" + address + "/")
+	if err != nil {
+		t.Fatalf("TLS 1.3 request failed: %v", err)
+	}
+	_ = response.Body.Close()
+}
+
 func TestCertificateReloadRetainsLastValidConfiguration(t *testing.T) {
 	directory := t.TempDir()
 	first := writeCertificateMaterial(t, directory, "one")
