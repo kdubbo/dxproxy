@@ -53,11 +53,32 @@ func ParseOptionalMode(value string) (Mode, bool, error) {
 }
 
 type runtimeConfig struct {
-	Version  string `json:"version"`
-	Workload struct {
+	Version   string            `json:"version"`
+	Telemetry *runtimeTelemetry `json:"telemetry"`
+	Workload  struct {
 		PodIP string `json:"podIP"`
 	} `json:"workload"`
 	Services []runtimeService `json:"services"`
+}
+
+type runtimeTelemetry struct {
+	Metrics *runtimeMetrics `json:"metrics"`
+}
+
+type runtimeMetrics struct {
+	Enabled   bool                `json:"enabled"`
+	Providers []string            `json:"providers"`
+	Rules     []runtimeMetricRule `json:"rules"`
+}
+
+type runtimeMetricRule struct {
+	Metric string                        `json:"metric"`
+	Scope  string                        `json:"scope"`
+	Tags   map[string]runtimeTagOverride `json:"tags"`
+}
+
+type runtimeTagOverride struct {
+	Action string `json:"action"`
 }
 
 type runtimeService struct {
@@ -101,6 +122,7 @@ type State struct {
 	Mode                  Mode
 	AuthorizationPolicies []AuthorizationPolicy
 	Fault                 Fault
+	Telemetry             telemetry.Config
 }
 
 func stateFromRuntimeConfig(data []byte, policyPort int) (State, error) {
@@ -154,7 +176,11 @@ func stateFromRuntimeConfig(data []byte, policyPort int) (State, error) {
 		}
 		return State{}, fmt.Errorf("no inbound mTLS policy found for workload services")
 	}
-	state := State{Mode: best}
+	telemetryConfig, err := parseRuntimeTelemetry(cfg.Telemetry)
+	if err != nil {
+		return State{}, err
+	}
+	state := State{Mode: best, Telemetry: telemetryConfig}
 	for _, authorizationPolicy := range policies {
 		state.AuthorizationPolicies = append(state.AuthorizationPolicies, authorizationPolicy)
 	}
@@ -168,6 +194,48 @@ func stateFromRuntimeConfig(data []byte, policyPort int) (State, error) {
 		state.Fault = *selectedFault
 	}
 	return state, nil
+}
+
+func parseRuntimeTelemetry(raw *runtimeTelemetry) (telemetry.Config, error) {
+	if raw == nil || raw.Metrics == nil || !raw.Metrics.Enabled {
+		return telemetry.Config{}, nil
+	}
+	hasPrometheus := false
+	for _, provider := range raw.Metrics.Providers {
+		switch provider {
+		case "prometheus":
+			hasPrometheus = true
+		case "":
+		default:
+			return telemetry.Config{}, fmt.Errorf("telemetry.metrics provider %q is unsupported", provider)
+		}
+	}
+	if !hasPrometheus {
+		return telemetry.Config{}, nil
+	}
+	result := telemetry.Config{}
+	for _, rule := range raw.Metrics.Rules {
+		if rule.Metric != "REQUEST_COUNT" {
+			return telemetry.Config{}, fmt.Errorf("telemetry metric %q is unsupported", rule.Metric)
+		}
+		switch rule.Scope {
+		case "SERVER", "CLIENT_AND_SERVER":
+			result.RequestCountEnabled = true
+		case "CLIENT":
+			continue
+		default:
+			return telemetry.Config{}, fmt.Errorf("telemetry REQUEST_COUNT scope %q is unsupported", rule.Scope)
+		}
+		for name, override := range rule.Tags {
+			if override.Action != "REMOVE" {
+				return telemetry.Config{}, fmt.Errorf("telemetry REQUEST_COUNT tag %q action %q is unsupported", name, override.Action)
+			}
+			if name == "grpc_response_status" {
+				result.RemoveGRPCResponseStatus = true
+			}
+		}
+	}
+	return result, nil
 }
 
 func modeFromRuntimeConfig(data []byte, policyPort int) (Mode, error) {
@@ -285,6 +353,7 @@ func (s *Source) Reload() error {
 	}
 	previous := s.Mode()
 	s.current.Store(state)
+	s.metrics.Configure(state.Telemetry)
 	s.loaded.Store(true)
 	s.recordRecovery()
 	if previous != state.Mode {

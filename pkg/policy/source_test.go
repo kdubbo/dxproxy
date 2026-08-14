@@ -153,6 +153,31 @@ func TestStateFromRuntimeConfigLoadsAuthorizationPolicies(t *testing.T) {
 	}
 }
 
+func TestStateFromRuntimeConfigLoadsServerRequestTelemetry(t *testing.T) {
+	data := []byte(`{
+		"telemetry":{"metrics":{
+			"enabled":true,
+			"providers":["prometheus"],
+			"rules":[{
+				"metric":"REQUEST_COUNT",
+				"scope":"CLIENT_AND_SERVER",
+				"tags":{"grpc_response_status":{"action":"REMOVE"}}
+			}]
+		}},
+		"services":[{
+			"host":"orders.default.svc",
+			"ports":[{"port":80,"mtlsMode":"STRICT"}]
+		}]
+	}`)
+	state, err := stateFromRuntimeConfig(data, 80)
+	if err != nil {
+		t.Fatalf("stateFromRuntimeConfig() error = %v", err)
+	}
+	if !state.Telemetry.RequestCountEnabled || !state.Telemetry.RemoveGRPCResponseStatus {
+		t.Fatalf("telemetry = %+v", state.Telemetry)
+	}
+}
+
 func TestPolicySourceRetainsLastValidMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.json")
 	writeRuntimePolicy(t, path, ModePermissive)
