@@ -301,9 +301,7 @@ func (s *Server) handleConnection(ctx context.Context, downstream net.Conn) erro
 		return fmt.Errorf("connect local upstream %s: %w", s.config.UpstreamAddress, err)
 	}
 	defer func() { _ = upstream.Close() }()
-	responseObserver := newGRPCResponseObserver(s.metrics)
-	toUpstream, toDownstream, copyErr := copyBothDirections(downstream, upstream, responseObserver)
-	responseObserver.Close()
+	toUpstream, toDownstream, copyErr := copyBothDirections(downstream, upstream)
 	s.metrics.AddBytes(uint64(toUpstream), uint64(toDownstream))
 	if copyErr != nil {
 		return fmt.Errorf("proxy connection: %w", copyErr)
@@ -425,14 +423,10 @@ type copyResult struct {
 	err       error
 }
 
-func copyBothDirections(downstream, upstream net.Conn, responseObserver io.Writer) (toUpstream, toDownstream int64, copyErr error) {
+func copyBothDirections(downstream, upstream net.Conn) (toUpstream, toDownstream int64, copyErr error) {
 	results := make(chan copyResult, 2)
 	go func() {
-		writer := io.Writer(downstream)
-		if responseObserver != nil {
-			writer = io.MultiWriter(downstream, responseObserver)
-		}
-		copied, err := io.Copy(writer, upstream)
+		copied, err := io.Copy(downstream, upstream)
 		closeWrite(downstream)
 		results <- copyResult{direction: "upstream-to-downstream", bytes: copied, err: err}
 	}()

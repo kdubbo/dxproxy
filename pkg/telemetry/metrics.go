@@ -8,16 +8,9 @@ package telemetry
 import (
 	"fmt"
 	"io"
-	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 )
-
-type Config struct {
-	RequestCountEnabled      bool
-	RemoveGRPCResponseStatus bool
-}
 
 type Metrics struct {
 	connectionsOpened       atomic.Uint64
@@ -38,10 +31,6 @@ type Metrics struct {
 	certificateReloadErrors atomic.Uint64
 	terminating             atomic.Bool
 	drainNanoseconds        atomic.Int64
-	requestCountEnabled     atomic.Bool
-	removeResponseStatus    atomic.Bool
-	requestsMu              sync.RWMutex
-	requestsByStatus        map[string]uint64
 }
 
 type Snapshot struct {
@@ -66,24 +55,7 @@ type Snapshot struct {
 }
 
 func NewMetrics() *Metrics {
-	return &Metrics{requestsByStatus: make(map[string]uint64)}
-}
-
-func (m *Metrics) Configure(config Config) {
-	m.requestCountEnabled.Store(config.RequestCountEnabled)
-	m.removeResponseStatus.Store(config.RemoveGRPCResponseStatus)
-}
-
-func (m *Metrics) RequestCompleted(grpcResponseStatus string) {
-	if !m.requestCountEnabled.Load() {
-		return
-	}
-	if grpcResponseStatus == "" {
-		grpcResponseStatus = "2"
-	}
-	m.requestsMu.Lock()
-	m.requestsByStatus[grpcResponseStatus]++
-	m.requestsMu.Unlock()
+	return &Metrics{}
 }
 
 func (m *Metrics) ConnectionOpened() {
@@ -209,44 +181,6 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 	}
 	for _, metric := range values {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", metric.name, metric.help, metric.name, metric.typ, metric.name, metric.value); err != nil {
-			return err
-		}
-	}
-	if m.requestCountEnabled.Load() {
-		if err := m.writeRequestCount(w); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (m *Metrics) writeRequestCount(w io.Writer) error {
-	m.requestsMu.RLock()
-	statuses := make([]string, 0, len(m.requestsByStatus))
-	var total uint64
-	for status, count := range m.requestsByStatus {
-		statuses = append(statuses, status)
-		total += count
-	}
-	sort.Strings(statuses)
-	m.requestsMu.RUnlock()
-
-	const (
-		name = "dubbo_inherent_requests_total"
-		help = "Total completed Inherent gRPC requests."
-	)
-	if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", name, help, name); err != nil {
-		return err
-	}
-	if m.removeResponseStatus.Load() {
-		_, err := fmt.Fprintf(w, "%s{reporter=\"server\"} %d\n", name, total)
-		return err
-	}
-	for _, status := range statuses {
-		m.requestsMu.RLock()
-		count := m.requestsByStatus[status]
-		m.requestsMu.RUnlock()
-		if _, err := fmt.Fprintf(w, "%s{reporter=\"server\",grpc_response_status=%q} %d\n", name, status, count); err != nil {
 			return err
 		}
 	}
