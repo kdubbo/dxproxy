@@ -1,5 +1,7 @@
 # dxproxy
 
-dxproxy is the standalone inbound proxy for Dubbo Inherent mesh. It terminates inbound mTLS,
-applies the workload's inbound mTLS mode, and proxies the resulting byte stream
-to the local application.
+The standalone inbound sidecar has been removed.
+
+Dubbo Inherent is proxyless: the original application container consumes the
+xDS bootstrap, runtime policy, certificates and telemetry configuration
+directly. No dxproxy image or additional workload container is required.
